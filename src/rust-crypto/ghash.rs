@@ -78,8 +78,8 @@ impl Gf128 {
     // This is equivalent to a rightshift, followed by an XOR iff the lsb was set,
     // in the bit representation
     fn times_x_reduce(self) -> Gf128 {
-        let r = Gf128::new(0, 0, 0, 0b1110_0001 << 24);
-        self.cond_xor(r, self.times_x())
+        const R: Gf128 = Gf128 { d: simd::u32x4(0, 0, 0, 0b1110_0001 << 24) };
+        self.cond_xor(R, self.times_x())
     }
 
     // Adds y, and multiplies with h using a precomputed array of the values h * x^0 to h * x^127
@@ -96,7 +96,7 @@ impl Gf128 {
     // This XORs the value of y with x if the LSB of self is set, otherwise y is returned
     #[cfg(target_arch = "x86_64")]
     fn cond_xor(self, x: Gf128, mut y: Gf128) -> Gf128 {
-        let lsb = simd::u32x4(1, 0, 0, 0);
+        const LSB: simd::u32x4 = simd::u32x4(1, 0, 0, 0);
         unsafe {
             asm!("
                 movdqa $1, %xmm1
@@ -105,7 +105,7 @@ impl Gf128 {
                 pshufd $$0x00, %xmm1, %xmm1
                 pand $2, %xmm1
                 pxor %xmm1, $0
-                " : "+x" (y.d) : "x" (self.d), "x" (x.d), "x" (lsb) : "xmm1"
+                " : "+x" (y.d) : "x" (self.d), "x" (x.d), "x" (LSB) : "xmm1"
             );
         }
         y
@@ -113,8 +113,8 @@ impl Gf128 {
 
     #[cfg(not(target_arch = "x86_64"))]
     fn cond_xor(self, x: Gf128, y: Gf128) -> Gf128 {
-        let lsb = simd::u32x4(1, 0, 0, 0);
-        let simd::u32x4(m, _, _, _) = (self.d & lsb) == lsb;
+        const LSB: simd::u32x4 = simd::u32x4(1, 0, 0, 0);
+        let simd::u32x4(m, _, _, _) = (self.d & LSB) == LSB;
         let mask = simd::u32x4(m, m, m, m);
         Gf128 { d: (x.d & mask) ^ y.d }
     }
@@ -293,7 +293,7 @@ impl Mac for Ghash {
 
     fn result(&mut self) -> MacResult {
         let mut mac = [0u8, ..16];
-        self.raw_result(mac[mut]);
+        self.raw_result(mac);
         return MacResult::new(mac[]);
     }
 
@@ -566,7 +566,7 @@ mod bench {
         bh.iter( || {
             let mut ghash = Ghash::new(key);
             ghash.input(bytes);
-            ghash.raw_result(mac[mut]);
+            ghash.raw_result(mac);
         });
         bh.bytes = bytes.len() as u64;
     }
@@ -579,7 +579,7 @@ mod bench {
         bh.iter( || {
             let mut ghash = Ghash::new(key);
             ghash.input(bytes);
-            ghash.raw_result(mac[mut]);
+            ghash.raw_result(mac);
         });
         bh.bytes = bytes.len() as u64;
     }
@@ -592,7 +592,7 @@ mod bench {
         bh.iter( || {
             let mut ghash = Ghash::new(key);
             ghash.input(bytes);
-            ghash.raw_result(mac[mut]);
+            ghash.raw_result(mac);
         });
         bh.bytes = bytes.len() as u64;
     }
