@@ -16,6 +16,7 @@ extern crate serialize;
 extern crate time;
 #[cfg(test)] extern crate test;
 
+pub mod aead;
 pub mod aes;
 pub mod aessafe;
 pub mod bcrypt;
