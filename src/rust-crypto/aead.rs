@@ -9,8 +9,22 @@ use std::slice;
 use ghash::Ghash;
 use symmetriccipher::BlockEncryptor;
 
+fn inc_iv(iv: &mut [u8]) {
+    for i in iv[mut 12..].iter_mut().rev() {
+        let prev = *i;
+        *i += 1;
+        if *i >= prev {
+            break;
+        }
+    }
+}
+
 pub trait AeadEncryptor {
     fn encrypt(&self, iv: &[u8], ad: &[u8], input: &[u8], output: &mut [u8]);
+}
+
+pub trait AeadDecryptor {
+    fn decrypt(&self, iv: &[u8], ad: &[u8], input: &[u8], output: &mut [u8]) -> Result<(), ()>;
 }
 
 pub struct GcmEncryptor<A> {
@@ -26,16 +40,6 @@ impl<A: BlockEncryptor> GcmEncryptor<A> {
         GcmEncryptor {
             algo: algo,
             h: h
-        }
-    }
-}
-
-fn inc_iv(iv: &mut [u8]) {
-    for i in iv[mut 12..].iter_mut().rev() {
-        let prev = *i;
-        *i += 1;
-        if *i >= prev {
-            break;
         }
     }
 }
@@ -60,8 +64,7 @@ impl<A: BlockEncryptor> AeadEncryptor for GcmEncryptor<A> {
 
         let mut hash = Ghash::new(self.h).input_a(ad).input_c([]);
 
-        for (o, i) in output.chunks_mut(16).zip(input.chunks(16)) {
-            let o = if o.len() > i.len() { o[mut ..i.len()] } else { o };
+        for (o, i) in output[mut ..in_len].chunks_mut(16).zip(input.chunks(16)) {
             inc_iv(iv);
             let mut x: [u8, ..16] = unsafe { mem::uninitialized() };
             self.algo.encrypt_block(iv, x);
@@ -80,9 +83,66 @@ impl<A: BlockEncryptor> AeadEncryptor for GcmEncryptor<A> {
     }
 }
 
+pub struct GcmDecryptor<A> {
+    algo: A,
+    h: [u8, ..16]
+}
+
+impl<A: BlockEncryptor> GcmDecryptor<A> {
+    pub fn new(algo: A) -> GcmDecryptor<A> {
+        assert_eq!(algo.block_size(), 16u);
+        let mut h: [u8, ..16] = unsafe { mem::uninitialized() };
+        algo.encrypt_block([0, ..16], h);
+        GcmDecryptor {
+            algo: algo,
+            h: h
+        }
+    }
+}
+
+impl<A: BlockEncryptor> AeadDecryptor for GcmDecryptor<A> {
+    fn decrypt(&self, iv: &[u8], ad: &[u8], input: &[u8], output: &mut [u8]) -> Result<(), ()> {
+        let in_len = input.len();
+        let out_len = output.len();
+        assert!(in_len >= out_len);
+        let tag_len = in_len - out_len;
+
+        let mut iv = if iv.len() == 12 {
+            let mut iv_tmp: [u8, ..16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+            slice::bytes::copy_memory(iv_tmp, iv);
+            iv_tmp
+        } else {
+            Ghash::new(self.h).input_c(iv).result()
+        };
+
+        let mut tag: [u8, ..16] = unsafe { mem::uninitialized() };
+        self.algo.encrypt_block(iv, tag);
+
+        let mut hash = Ghash::new(self.h).input_a(ad).input_c([]);
+
+        for (o, i) in output.chunks_mut(16).zip(input[..out_len].chunks(16)) {
+            inc_iv(iv);
+            let mut x: [u8, ..16] = unsafe { mem::uninitialized() };
+            self.algo.encrypt_block(iv, x);
+
+            for ((v, w), &x) in o.iter_mut().zip(i.iter()).zip(x.iter()) {
+                *v = w ^ x;
+            }
+            hash = hash.input_c(i);
+        }
+
+        for (t, &h) in tag.iter_mut().zip(hash.result().iter()) {
+            *t ^= h;
+        }
+
+        println!("{} {}", input[out_len..], tag[..tag_len]);
+        if input[out_len..] == tag[..tag_len] { Ok(()) } else { Err(()) }
+    }
+}
+
 #[cfg(test)]
 mod test {
-    use aead::{AeadEncryptor, GcmEncryptor};
+    use aead::{AeadEncryptor, GcmEncryptor, AeadDecryptor, GcmDecryptor};
     use aessafe;
 
     // Test cases from:
@@ -443,6 +503,31 @@ mod test {
             }
 
             assert_eq!(out[], ct[]);
+        }
+    }
+
+    #[test]
+    fn decrypt() {
+        for &(key, ad, p, iv, ct) in CASES.iter() {
+            let mut out = Vec::from_elem(p.len(), 0u8);
+
+            match key.len() {
+                16 => {
+                    let dec = GcmDecryptor::new(aessafe::AesSafe128Encryptor::new(key));
+                    assert!(dec.decrypt(iv, ad, ct, out[mut]).is_ok());
+                },
+                24 => {
+                    let dec = GcmDecryptor::new(aessafe::AesSafe192Encryptor::new(key));
+                    assert!(dec.decrypt(iv, ad, ct, out[mut]).is_ok());
+                },
+                32 => {
+                    let dec = GcmDecryptor::new(aessafe::AesSafe256Encryptor::new(key));
+                    assert!(dec.decrypt(iv, ad, ct, out[mut]).is_ok());
+                },
+                _ => unreachable!()
+            }
+
+            assert_eq!(out[], p[]);
         }
     }
 }
